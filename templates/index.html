@@ -1,0 +1,265 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Denoising AutoEncoder Demo</title>
+    <link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}">
+</head>
+<body>
+    <!-- Header -->
+    <header>
+        <div class="header-content">
+            <h1>🧹 Denoising AutoEncoder</h1>
+            <p class="subtitle">Deep Learning Miniproject — Drag & drop a noisy document image to see it cleaned</p>
+        </div>
+    </header>
+
+    <main>
+        <!-- Drop Zone -->
+        <section class="upload-section">
+            <div id="dropzone" class="dropzone">
+                <div class="dropzone-content">
+                    <div class="dropzone-icon">📄</div>
+                    <p class="dropzone-title">Drag & drop a noisy document image here</p>
+                    <p class="dropzone-subtitle">or click to browse files</p>
+                    <p class="dropzone-hint">Supports PNG, JPG, BMP</p>
+                </div>
+                <input type="file" id="fileInput" accept="image/*" hidden>
+            </div>
+        </section>
+
+        <!-- Loading Spinner -->
+        <div id="loading" class="loading hidden">
+            <div class="spinner"></div>
+            <p>Denoising in progress...</p>
+        </div>
+
+        <!-- Results -->
+        <section id="results" class="results hidden">
+            <div class="results-header">
+                <h2>Results</h2>
+                <div class="view-controls">
+                    <button type="button" id="btn-grayscale" class="toggle-btn active">Grayscale Clean</button>
+                    <button type="button" id="btn-ocr" class="toggle-btn">OCR Binarized</button>
+                </div>
+                <span id="time-badge" class="badge">⚡ Inference: --ms</span>
+            </div>
+            <div class="comparison">
+                <div class="image-card">
+                    <h3>Original (Noisy)</h3>
+                    <div class="image-wrapper">
+                        <img id="original-img" alt="Original noisy image">
+                    </div>
+                </div>
+                <div class="arrow">→</div>
+                <div class="image-card">
+                    <h3>Denoised (Clean)</h3>
+                    <div class="image-wrapper">
+                        <img id="denoised-img" alt="Denoised image">
+                    </div>
+                </div>
+            </div>
+            <div class="actions">
+                <button id="download-btn" class="btn btn-primary">⬇ Download Denoised Image</button>
+                <button id="reset-btn" class="btn btn-secondary">🔄 Try Another Image</button>
+            </div>
+        </section>
+
+        <!-- Sample Images -->
+        <section id="samples-section" class="samples-section">
+            <h2>📂 Or try a sample from the test set</h2>
+            <div id="samples-grid" class="samples-grid"></div>
+        </section>
+
+        <!-- Architecture Info -->
+        <section class="info-section">
+            <h2>📐 Model Architecture</h2>
+            <div class="architecture">
+                <div class="arch-block encoder">
+                    <h4>Encoder</h4>
+                    <div class="layer">Conv2d(1→32) + BN + ReLU</div>
+                    <div class="layer">MaxPool2d(2×2)</div>
+                    <div class="layer">Conv2d(32→64) + BN + ReLU</div>
+                    <div class="layer">MaxPool2d(2×2)</div>
+                    <div class="layer">Conv2d(64→128) + BN + ReLU</div>
+                    <div class="layer">MaxPool2d(2×2)</div>
+                </div>
+                <div class="arch-arrow">→</div>
+                <div class="arch-block bottleneck">
+                    <h4>Bottleneck</h4>
+                    <div class="layer">128 × 32 × 32</div>
+                    <div class="layer">Latent Space</div>
+                </div>
+                <div class="arch-arrow">→</div>
+                <div class="arch-block decoder">
+                    <h4>Decoder</h4>
+                    <div class="layer">ConvT2d(128→64) + ReLU</div>
+                    <div class="layer">ConvT2d(64→32) + ReLU</div>
+                    <div class="layer">ConvT2d(32→1) + Sigmoid</div>
+                </div>
+            </div>
+            <div class="stats">
+                <div class="stat">
+                    <span class="stat-value">134,305</span>
+                    <span class="stat-label">Parameters</span>
+                </div>
+                <div class="stat">
+                    <span class="stat-value">256×256</span>
+                    <span class="stat-label">Input Size</span>
+                </div>
+                <div class="stat">
+                    <span class="stat-value">MSE</span>
+                    <span class="stat-label">Loss Function</span>
+                </div>
+                <div class="stat">
+                    <span class="stat-value">Adam</span>
+                    <span class="stat-label">Optimizer</span>
+                </div>
+            </div>
+        </section>
+    </main>
+
+    <footer>
+        <p>Deep Learning Lab Miniproject — Denoising AutoEncoder | Built with PyTorch + Flask</p>
+    </footer>
+
+    <script>
+        // ===================================================================
+        // Drag & Drop + File Upload
+        // ===================================================================
+        const dropzone = document.getElementById('dropzone');
+        const fileInput = document.getElementById('fileInput');
+        const loading = document.getElementById('loading');
+        const results = document.getElementById('results');
+        const originalImg = document.getElementById('original-img');
+        const denoisedImg = document.getElementById('denoised-img');
+        const timeBadge = document.getElementById('time-badge');
+        const downloadBtn = document.getElementById('download-btn');
+        const resetBtn = document.getElementById('reset-btn');
+        const btnGrayscale = document.getElementById('btn-grayscale');
+        const btnOcr = document.getElementById('btn-ocr');
+
+        let rawDenoisedB64 = '';
+        let ocrCleanedB64 = '';
+
+        btnGrayscale.addEventListener('click', () => {
+            btnGrayscale.classList.add('active');
+            btnOcr.classList.remove('active');
+            if (rawDenoisedB64) denoisedImg.src = rawDenoisedB64;
+        });
+
+        btnOcr.addEventListener('click', () => {
+            btnOcr.classList.add('active');
+            btnGrayscale.classList.remove('active');
+            if (ocrCleanedB64) denoisedImg.src = ocrCleanedB64;
+        });
+
+        // Click to browse
+        dropzone.addEventListener('click', () => fileInput.click());
+        fileInput.addEventListener('change', (e) => {
+            if (e.target.files.length > 0) processFile(e.target.files[0]);
+        });
+
+        // Drag events
+        dropzone.addEventListener('dragover', (e) => {
+            e.preventDefault();
+            dropzone.classList.add('dragover');
+        });
+        dropzone.addEventListener('dragleave', () => {
+            dropzone.classList.remove('dragover');
+        });
+        dropzone.addEventListener('drop', (e) => {
+            e.preventDefault();
+            dropzone.classList.remove('dragover');
+            if (e.dataTransfer.files.length > 0) processFile(e.dataTransfer.files[0]);
+        });
+
+        // Process uploaded file
+        function processFile(file) {
+            if (!file.type.startsWith('image/')) {
+                alert('Please upload an image file (PNG, JPG, BMP)');
+                return;
+            }
+
+            const formData = new FormData();
+            formData.append('image', file);
+
+            // Show loading, hide results
+            loading.classList.remove('hidden');
+            results.classList.add('hidden');
+
+            fetch('/denoise', {
+                method: 'POST',
+                body: formData,
+            })
+            .then(res => res.json())
+            .then(data => {
+                if (data.error) {
+                    alert('Error: ' + data.error);
+                    loading.classList.add('hidden');
+                    return;
+                }
+
+                rawDenoisedB64 = 'data:image/png;base64,' + data.denoised;
+                ocrCleanedB64 = 'data:image/png;base64,' + data.ocr_cleaned;
+
+                originalImg.src = 'data:image/png;base64,' + data.original;
+                denoisedImg.src = btnOcr.classList.contains('active') ? ocrCleanedB64 : rawDenoisedB64;
+                timeBadge.textContent = '⚡ Inference: ' + data.time_ms + 'ms';
+
+                loading.classList.add('hidden');
+                results.classList.remove('hidden');
+                results.scrollIntoView({ behavior: 'smooth' });
+            })
+            .catch(err => {
+                alert('Error processing image: ' + err);
+                loading.classList.add('hidden');
+            });
+        }
+
+        // Download denoised image
+        downloadBtn.addEventListener('click', () => {
+            const link = document.createElement('a');
+            link.download = 'denoised_output.png';
+            link.href = denoisedImg.src;
+            link.click();
+        });
+
+        // Reset
+        resetBtn.addEventListener('click', () => {
+            results.classList.add('hidden');
+            fileInput.value = '';
+            window.scrollTo({ top: 0, behavior: 'smooth' });
+        });
+
+        // ===================================================================
+        // Load sample images from test set
+        // ===================================================================
+        fetch('/samples')
+            .then(res => res.json())
+            .then(data => {
+                const grid = document.getElementById('samples-grid');
+                if (data.samples.length === 0) {
+                    document.getElementById('samples-section').classList.add('hidden');
+                    return;
+                }
+                data.samples.forEach(filename => {
+                    const card = document.createElement('div');
+                    card.className = 'sample-card';
+                    card.innerHTML = `<img src="/samples/${filename}" alt="${filename}"><span>${filename}</span>`;
+                    card.addEventListener('click', () => {
+                        // Fetch the sample image and process it
+                        fetch(`/samples/${filename}`)
+                            .then(res => res.blob())
+                            .then(blob => {
+                                const file = new File([blob], filename, { type: 'image/png' });
+                                processFile(file);
+                            });
+                    });
+                    grid.appendChild(card);
+                });
+            });
+    </script>
+</body>
+</html>
